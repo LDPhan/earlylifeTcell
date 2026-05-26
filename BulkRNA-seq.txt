@@ -1,0 +1,254 @@
+library("DESeq2")
+library(tidyverse) #dyplr,readr,stringr,ggplot2,purrr,tibble
+library(pheatmap)
+library("RColorBrewer")
+library(ashr)
+library(openxlsx)
+library(plotly)
+library(EnhancedVolcano)
+library(ggplot2)
+library(pheatmap)
+library(ggrepel)
+library(DOSE)
+library(dplyr)
+library(AnnotationDbi)
+library(tidyr)
+
+#Reading the raw counts file
+#Be sure you are set in the correct working directory
+countData <- as.matrix(read.csv("gene_count_matrix.csv", row.names=1))
+head(countData)
+
+#Read the metadata file that dictates what conditions your sample names refer to
+metadata <- read.csv("metadata.csv", row.names=1, stringsAsFactors = TRUE)
+metadata
+
+#Experimental design
+designCondition <- ~ Replicate + Organoid + Condition
+#designDonor <- ~ Replicate + Organoid + T_cell_Donor
+ddsCondition <- DESeqDataSetFromMatrix(countData = countData,colData = metadata,design = designCondition)
+ddsCondition <- DESeq(ddsCondition)
+#You can also switch these to Donor later
+
+#Make sure that counts were made for every sample
+as.data.frame(colSums(countData))
+#Check the size factors, which will account for changes in sequencing depth, library size, etc.
+#A value of 0.55 means it will be scaled up by 0.55 in normalization; 1.19 means it will be scaled down by 1.19 in normalization
+as.data.frame(sizeFactors(ddsCondition))
+#Determine how many genes were lowly expressed; here the threshold is 10 counts and see how many will remain after this threshold
+dim(ddsCondition)
+dim(ddsCondition[rowSums(counts(ddsCondition)) > 10, ])
+# Filter out lowly expressed genes
+ddsCondition <- ddsCondition[rowSums(counts(ddsCondition)) > 10, ]
+
+#Log transform the data to prepare it for analysis
+rld <- rlogTransformation(ddsCondition, blind=FALSE)
+head(assay(rld))
+#vst <- vst(dds, blind=FALSE)
+#head(assay(vst))
+
+plotPCA(rld, intgroup="Condition", ntop = 5000)
+
+#Update the PCA to show confidence intervals 
+pcaData <- plotPCA(rld, intgroup = "Condition", ntop = 5000, returnData = TRUE)
+#Calculate percent variance
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+#Plot with ggplot2 and add confidence ellipses
+ggplot(pcaData, aes(x = PC1, y = PC2, color = Condition)) +
+  geom_point(size = 2) +
+  stat_ellipse(level = 0.95) +  # 95% confidence ellipse
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  theme_minimal() +
+  coord_fixed()
+#Check how each PC contributes to the variance
+pca <- prcomp(t(assay(rld)))  # assumes rld is your rlog-transformed DESeqDataSet
+#Extract and clean up variance proportions
+prop_var <- summary(pca)$importance["Proportion of Variance", ] * 100
+prop_var <- prop_var[is.finite(prop_var) & !is.na(prop_var)]
+barplot(prop_var,
+        main = "Proportion of Variance by Principal Component",
+        ylab = "% Variance",
+        xlab = "PC",
+        col = "steelblue")
+
+#Extract the loadings (gene contributions to each PC)
+loadings <- pca$rotation
+#Extract top 50 genes based on absolute loadings for the first PC (or another PC if needed)
+top_genes <- names(sort(abs(loadings[,1]), decreasing = TRUE)[1:50])
+#Subset the loadings matrix for these top 50 genes
+top_loadings <- loadings[top_genes, ]
+#Create the heatmap
+heatmap <- pheatmap(top_loadings, 
+                    cluster_cols = TRUE, 
+                    show_rownames = TRUE, 
+                    main = "Heatmap of Top 50 Genes' PCA Loadings",
+                    color = colorRampPalette(c("blue", "white", "red"))(50))
+
+#Run differential expression where p<0.05
+res <- results(ddsCondition, alpha=0.05)
+head(res)
+#Perform LFC shrinkage
+res <- lfcShrink(ddsCondition, res=res, type="ashr")
+plotMA(res, main="Shrunken FC")
+#Remove any duplicated items
+res2<-res[!duplicated(res),]
+#Split the columns 
+library(stringr)
+res2$ENSEMBL=as.data.frame(str_split(rownames(res2), "\\..*", simplify = TRUE))$V1
+res2$GENEID=as.data.frame(str_split(rownames(res2), ".*\\|", simplify = TRUE))$V2
+head(res2)
+#Load the gene annotation 
+library(org.Hs.eg.db)
+#Extract gene information (e.g., gene symbols and biotypes)
+gene_info <- AnnotationDbi::select(org.Hs.eg.db, keys=keys(org.Hs.eg.db, keytype="ENSEMBL"), columns=c("SYMBOL", "GENETYPE"), keytype="ENSEMBL")
+#Convert to data frame
+gene_info <- as.data.frame(gene_info)
+head(gene_info)
+#Merge DESeq2 results with gene annotations
+res2<-as.data.frame(res2)
+merged_results <- merge(res2, gene_info, by.x="ENSEMBL", by.y="ENSEMBL")
+head(merged_results)
+#Subset non-coding out
+merged_results=merged_results[merged_results$GENETYPE=="protein-coding",]
+head(merged_results)
+write_csv(merged_results, "merged_results.csv")
+
+#write new sheet with only sig accounting for padj
+merged_results_sig <- merged_results[which(merged_results$padj < 0.05), ]
+head(merged_results_sig)
+write_csv(merged_results_sig, "merged_results_sig.csv")
+
+#Generate a volcano plot
+volc=EnhancedVolcano(merged_results, lab = merged_results$GENEID, 
+                     x = 'log2FoldChange', y='padj', 
+                     title = "VolcanoPlot", 
+                     FCcutoff = 2, pCutoff = 0.05,
+                     subtitle = "Log2FC>=2, padj<=0.05",
+                     pointSize = 2.0,    # Adjust this value to change the size of the dots
+                     labSize = 4.0,      # Adjust this value to change the size of the labels
+                     colAlpha = 0.4,     # Optional: Adjusts the transparency of the dots
+                     legendPosition = 'top',  # Optional: Adjusts the position of the legend
+                     legendLabSize = 10, # Optional: Adjusts the size of the legend labels
+                     drawConnectors = TRUE, # Optional: Draw connectors to labels
+                     widthConnectors = 0.5 # Optional: Adjusts the width of connector lines
+)
+
+#Pathway analysis
+library(clusterProfiler)
+library(enrichplot)
+library(ggplot2)
+
+#Set the desired organism
+organism <- "org.Hs.eg.db"
+#Install the human annotation package if not already installed
+#BiocManager::install(organism, character.only = TRUE)
+#Load the package
+library(organism, character.only = TRUE)
+
+#Read in the output data from deseq2 as a dataframe
+df = read.csv("merged_results.csv", header=TRUE)
+#Create the numeric vector using log2FoldChange
+gene_list <- df$log2FoldChange
+names(gene_list) <- df$ENSEMBL  # Or df$symbol if you prefer gene symbols
+#Remove duplicated gene names but do not further filter this list by significance; only do that for GSEA, only for ORA
+gene_list <- gene_list[!duplicated(names(gene_list))]
+#Sort it in decreasing order (required for GSEA)
+gene_list <- sort(gene_list, decreasing = TRUE)
+head(gene_list) # Check that the list was made correctly
+
+#Run gseGO on your full gene list
+gse <- gseGO(geneList = gene_list, 
+             ont = "BP", #Biological process BP, Molecular function MF, Cellular component CC
+             keyType = "ENSEMBL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = organism, 
+             pAdjustMethod = "BH") #The pAdjustMethod could be set to "none" but this is more rigorous
+#Generate the plot using this command: dotplot(gse, showCategory=10, split=".sign") + facet_grid(.~.sign)
+
+#You could either run these fully unfiltered for all pathways, or filter based on intestine associated pathways
+#Below shows filtered
+#To prepare to filter by only showing intestinal pathways, read the gsea results from the dataframe
+gse_results <- as.data.frame(gse)
+#Filter gse@result by Description (pathway name)
+filtered_res <- gse@result[grepl("intestinal|epithelial|gut|mucosa", gse@result$Description, ignore.case = TRUE), ]
+#Create a new gseaResult object with filtered results
+gse_filtered <- gse
+gse_filtered@result <- filtered_res
+#Plot using this command: dotplot(gse_filtered, showCategory = 10)
+dotplot(gse_filtered, showCategory=10) + 
+  theme(
+    axis.text.y = element_text(size = 8),   # Adjust y-axis term labels size
+    axis.text.x = element_text(size = 10),   # Adjust x-axis labels size
+    axis.title = element_text(size = 12),    # Axis titles size
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 12)
+  )
+
+
+#Activated vs suppressed pathways
+dotplot(gse_filtered, showCategory=10, split=".sign") + 
+  facet_grid(.~.sign) + 
+  theme(
+    axis.text.y = element_text(size = 5),   # Y-axis (pathway labels)
+    axis.text.x = element_text(size = 10),   # X-axis labels
+    axis.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 12)
+  )
+dev.off() 
+
+#Function to map ENSEMBL IDs to gene symbols for a core_enrichment string
+map_core_genes <- function(core_enrich_str) {
+  genes <- strsplit(core_enrich_str, split = "/")[[1]]
+  mapped <- mapIds(org.Hs.eg.db,
+                   keys = genes,
+                   column = "SYMBOL",
+                   keytype = "ENSEMBL",
+                   multiVals = "first")
+  paste(na.omit(mapped), collapse = ", ")
+}
+
+# === Look at Intestinal filtered pathways ===
+results_df_intestinal <- as.data.frame(gse_filtered@result)
+
+#this is going to translate ENSEMBL IDs to interpretable gene symbols
+results_df_intestinal <- results_df_intestinal %>%
+  rowwise() %>%
+  mutate(core_enrichment_symbols = map_core_genes(core_enrichment))
+
+#this is going to add the core gene size to the stat calculations
+results_df_intestinal <- results_df_intestinal %>%
+  mutate(
+    core_size = lengths(strsplit(core_enrichment, "/")),
+    gene_ratio = core_size / setSize
+  ) 
+
+export_intestinal <- results_df_intestinal %>%
+  mutate(core_size = lengths(strsplit(core_enrichment, "/")),
+         gene_ratio = core_size / setSize) %>%
+  mutate(core_enrichment_symbols = map_core_genes(core_enrichment)) %>%
+  select(ID, Description, core_enrichment, core_enrichment_symbols, NES, pvalue, p.adjust, gene_ratio) #this export will include the new gene enrichment in the export
+
+write.csv(export_intestinal, file = "Day6_intestine_filtered_pathways_with_genes.csv", row.names = FALSE)
+
+#Leading edge analysis
+#Your intestinal filtered GSEA object
+library(clusterProfiler)
+library(enrichplot)
+library(patchwork)
+#Assign your filtered object
+gse_intestinal <- gse_filtered
+#Step 1: Get top activated pathways (highest NES)
+top_activated <- gse_intestinal@result[order(-gse_intestinal@result$NES), ]
+#Step 1.1: See top ten available pathways and their descriptions
+head(top_activated[, c("ID", "Description", "NES")], 10)
+#Step 2: Pick the top pathway ID and its description
+pathway_id <- top_activated$ID[8]
+pathway_title <- top_activated$Description[8]
+gseaplot2(gse_intestinal, 
+          geneSetID = pathway_id, 
+          title = pathway_title)

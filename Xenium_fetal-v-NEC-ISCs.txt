@@ -1,0 +1,53 @@
+
+
+
+library(EnhancedVolcano)
+
+deg <- read.csv("~/project_pi_lk595/hy476/xenium/results/ISC_NEC_vs_fetal_DEG.csv")
+
+EnhancedVolcano(
+  deg,
+  lab = deg$gene,
+  x = 'log2FC',
+  y = 'p_adj',
+  
+  pCutoff = 0.05,
+  FCcutoff = 0.25,
+  
+  pointSize = 2.0,
+  labSize = 3.5,
+  
+  title = 'ISC : Fetal vs NEC',
+  subtitle = 'Wilcoxon test (Scanpy)',
+  
+  col = c("grey30", "grey30", "royalblue", "red")
+)
+
+library(EnhancedVolcano)
+pdf("~/project_pi_lk595/hy476/xenium/results_4_24_new/ISC_NEC_vs_Fetal_volcano.pdf", width = 10, height = 8)
+EnhancedVolcano(
+  deg,
+  lab = deg$gene,
+  x = 'log2FC',
+  y = 'p_adj',
+  
+  pCutoff = 0.05,
+  FCcutoff = 0.25,
+  
+  xlim = c(-2, 2),
+  ylim = c(0, 20),
+  
+  selectLab = deg$gene[deg$p_adj < 1e-5 & abs(deg$log2FC) > 0.5],
+  
+  pointSize = 2.5,
+  labSize = 4,
+  
+  col = c("grey80", "royalblue", "firebrick", "firebrick"),
+  
+  title = 'ISC : Fetal vs NEC',
+  
+  legendPosition = 'right',
+  legendLabSize = 10,
+  legendIconSize = 3
+)
+dev.off()

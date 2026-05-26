@@ -1,0 +1,44 @@
+
+library(BisqueRNA)
+library(granulator)
+
+sc.eset<-readRDS('sc.eset.rds')
+library(stringr)
+BULK_gene_count_matrix$symbol=as.data.frame(str_split(BULK_gene_count_matrix$gene_id, "\\.|\\|", simplify = TRUE))$V3
+BULK_gene_count_matrix$ID=as.data.frame(str_split(BULK_gene_count_matrix$gene_id, "\\.|\\|", simplify = TRUE))$V1
+
+bulk_counts<-BULK_gene_count_matrix[!duplicated(BULK_gene_count_matrix$symbol),]
+rownames(bulk_counts)=bulk_counts$symbol
+bulk_counts<-bulk_counts[,c(2:13)]
+bulk_counts<-bulk_counts[which(rowSums(bulk_counts)>10),]
+bulk_counts<-as.matrix(bulk_counts)
+bulk_counts_TPM<-get_TPM(bulk_counts, 24108) ##24108 gene number
+
+bulk.eset <- Biobase::ExpressionSet(assayData = bulk_counts_TPM)
+res <- BisqueRNA::ReferenceBasedDecomposition(bulk.eset, sc.eset, markers=NULL, use.overlap=FALSE)
+ref.based.estimates <- res$bulk.props
+knitr::kable(ref.based.estimates, digits=2)
+class(knitr::kable(ref.based.estimates, digits=2))
+fre <- read.table(text = knitr::kable(ref.based.estimates, digits=2), header = TRUE, sep = "|", strip.white = TRUE)
+fre<-fre[c(2:10),]
+fre<-fre[,c(2:14)]
+rownames(fre)=fre$X.1
+fre<-fre[,c(2:9)]
+
+
+library(tidyr)
+library(dplyr)
+
+
+colnames(fre)
+df <- fre %>%
+  pivot_longer(cols = -X.1, names_to = "Sample", values_to = "frequency")
+
+# Join df1_long with df2
+merged_df <- df %>%
+  left_join(BULK_metadata, by = "Sample") ###merge with sample meta information
+write.csv(merged_df, 'frequency.csv')
+
+
+
+
